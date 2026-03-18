@@ -278,9 +278,14 @@ def main():
 
     if args.resume and os.path.exists(args.resume):
         print(f"Resuming from {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        else:
+            for _ in range(ckpt["epoch"] + 1):
+                scheduler.step()
         start_epoch = ckpt["epoch"] + 1
         best_metric = ckpt.get("best_metric", float("inf"))
 
@@ -381,6 +386,7 @@ def main():
             "variant": variant_name,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "val_metrics": {
                 k: (
                     to_python_float(v)

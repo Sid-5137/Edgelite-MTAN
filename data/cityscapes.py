@@ -1,16 +1,20 @@
 """
 Cityscapes Dataset for Multi-Task Learning
-Enhanced augmentation pipeline for stronger segmentation performance.
 
-Key improvements over previous version:
-- Random scale jittering (0.5x - 2.0x) with random crop
-- Random Gaussian blur
-- Proper multi-scale training support
-- Class frequency weights for balanced CE loss
+Disparity conversion follows official Cityscapes documentation:
+    https://github.com/mcordts/cityscapesScripts
+    d = (float(p) - 1.) / 256.  for p > 0
+    depth = baseline * fx / d
+
+Camera intrinsics loaded from per-frame JSON calibration files
+when available (camera_trainvaltest.zip), otherwise falls back
+to approximate values (baseline=0.209313, fx=2262.52).
 """
 
 import os
 import glob
+import cv2
+import json
 import numpy as np
 from PIL import Image, ImageFilter
 import random
@@ -69,67 +73,71 @@ CATEGORY_GROUPS = {
     "background": [5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 18],
 }
 
-# Cityscapes class frequencies (approximate, from training set)
-# Used for inverse-frequency class weighting in cross-entropy
-# Order: road, sidewalk, building, wall, fence, pole, traffic_light,
-#        traffic_sign, vegetation, terrain, sky, person, rider, car,
-#        truck, bus, train, motorcycle, bicycle
-CITYSCAPES_CLASS_WEIGHTS = torch.FloatTensor(
-    [
-        0.8373,
-        0.9180,
-        0.8660,
-        1.0345,
-        1.0166,
-        0.9969,
-        0.9972,
-        1.0110,
-        0.9093,
-        0.9733,
-        0.9469,
-        1.0144,
-        0.9828,
-        0.9468,
-        1.0082,
-        0.9902,
-        1.0207,
-        1.0175,
-        1.0039,
-    ]
-)
 
-# More aggressive inverse-frequency weights for better rare-class mIoU
-CITYSCAPES_CLASS_WEIGHTS_STRONG = torch.FloatTensor(
-    [
-        0.05,  # road (very common)
-        0.15,  # sidewalk
-        0.10,  # building
-        0.80,  # wall (rare)
-        0.70,  # fence
-        1.50,  # pole (thin, rare)
-        2.00,  # traffic light (tiny)
-        1.80,  # traffic sign (small)
-        0.10,  # vegetation
-        0.30,  # terrain
-        0.10,  # sky
-        1.20,  # person
-        2.50,  # rider (rare)
-        0.20,  # car
-        1.50,  # truck (rare)
-        1.80,  # bus (rare)
-        3.00,  # train (very rare)
-        2.50,  # motorcycle (rare)
-        1.50,  # bicycle
-    ]
-)
+def load_camera_intrinsics(data_root, split, city, frame_name):
+    """
+    Load per-frame camera intrinsics from Cityscapes camera JSON.
+
+    Returns:
+        baseline: float (stereo baseline in meters)
+        fx: float (focal length in pixels, x-direction)
+        fy: float (focal length in pixels, y-direction)
+        cx: float (principal point x)
+        cy: float (principal point y)
+    """
+    camera_path = os.path.join(
+        data_root, "camera", split, city, frame_name + "_camera.json"
+    )
+
+    if os.path.exists(camera_path):
+        with open(camera_path, "r") as f:
+            calib = json.load(f)
+
+        intrinsic = calib.get("intrinsic", {})
+        extrinsic = calib.get("extrinsic", {})
+
+        fx = intrinsic.get("fx", 2262.52)
+        fy = intrinsic.get("fy", 2262.52)
+        cx = intrinsic.get("u0", 1024.0)
+        cy = intrinsic.get("v0", 512.0)
+        baseline = extrinsic.get("baseline", 0.209313)
+
+        return baseline, fx, fy, cx, cy
+    else:
+        # Fallback: approximate values from Cityscapes documentation
+        # baseline ~22cm, fx ~2262.52 at 2048x1024
+        return 0.209313, 2262.52, 2262.52, 1024.0, 512.0
 
 
-def disparity_to_depth(disparity, baseline=0.209313, focal_length=2262.52):
-    """Convert Cityscapes disparity to metric depth."""
-    valid = disparity > 0
-    depth = np.zeros_like(disparity, dtype=np.float32)
-    depth[valid] = (baseline * focal_length) / disparity[valid]
-    return depth, valid
+def disparity_to_depth(raw_disp, baseline=0.209313, focal_length=2262.52):
+    """
+    Convert Cityscapes 16-bit disparity PNG to metric depth.
+
+    Official formula from cityscapesScripts README:
+        d = (float(p) - 1.) / 256.  for p > 0
+        depth = baseline * focal_length / d
+
+    Args:
+        raw_disp: uint16 disparity image read with IMREAD_UNCHANGED
+        baseline: stereo baseline in meters
+        focal_length: focal length in pixels (fx)
+
+    Returns:
+        depth: float32 depth in meters
+        valid: boolean mask (True where depth is valid)
+    """
+    valid = raw_disp > 0
+    depth = np.zeros_like(raw_disp, dtype=np.float32)
+
+    # Official Cityscapes conversion: d = (p - 1) / 256
+    disp = np.zeros_like(raw_disp, dtype=np.float32)
+    disp[valid] = (raw_disp[valid].astype(np.float32) - 1.0) / 256.0
+
+    # depth = baseline * fx / disparity
+    valid_disp = valid & (disp > 0)
+    depth[valid_disp] = (baseline * focal_length) / disp[valid_disp]
+
+    return depth, valid_disp
 
 
 class CityscapesMultiTask(Dataset):
@@ -167,25 +175,37 @@ class CityscapesMultiTask(Dataset):
         if len(self.images) == 0:
             raise RuntimeError(f"No images found in {img_dir}.")
 
-        # Check Omnidata normals
-        normal_dir = os.path.join(root, "normals_omnidata", split)
-        self.has_omnidata_normals = os.path.isdir(normal_dir)
+        # Check for camera calibration files
+        camera_dir = os.path.join(root, "camera", split)
+        self.has_camera_json = os.path.isdir(camera_dir)
+        if self.has_camera_json:
+            print(
+                f"[CityscapesMultiTask] Using per-frame camera intrinsics from camera/ JSON files"
+            )
+        else:
+            print(
+                f"[CityscapesMultiTask] No camera/ folder found. Using default intrinsics "
+                f"(baseline=0.209313, fx=2262.52)"
+            )
 
-        if self.has_omnidata_normals:
+        # Check for pre-generated normals
+        normal_dir = os.path.join(root, "normals", split)
+        self.has_pregenerated_normals = os.path.isdir(normal_dir)
+
+        if self.has_pregenerated_normals:
             normal_files = glob.glob(os.path.join(normal_dir, "*", "*.npy"))
             print(
                 f"[CityscapesMultiTask] Found {len(self.images)} images, "
-                f"{len(normal_files)} Omnidata normals for {split}"
+                f"{len(normal_files)} normals for {split}"
             )
             if len(normal_files) == 0:
-                self.has_omnidata_normals = False
-                print(
-                    f"  WARNING: normals_omnidata/ empty. Using depth-derived normals."
-                )
+                self.has_pregenerated_normals = False
+                print(f"  WARNING: normals/ empty. Using depth-derived normals.")
         else:
             print(f"[CityscapesMultiTask] Found {len(self.images)} images for {split}")
+            print(f"  NOTE: No normals/ folder found. Using depth-derived normals.")
             print(
-                f"  Run 'python generate_normals.py --data_root {root}' for Omnidata normals."
+                f"  Run 'python generate_normals.py --data_root {root}' for DSINE normals."
             )
 
         self.normalize = T.Normalize(
@@ -211,17 +231,17 @@ class CityscapesMultiTask(Dataset):
             self.root, "disparity", self.split, city, base + "_disparity.png"
         )
         normal_path = os.path.join(
-            self.root, "normals_omnidata", self.split, city, base + "_normal.npy"
+            self.root, "normals", self.split, city, base + "_normal.npy"
         )
 
-        return seg_path, disp_path, normal_path
+        return seg_path, disp_path, normal_path, city, base
 
     def __len__(self):
         return len(self.images)
 
     def _load_normal(self, normal_path, depth, img_size):
-        """Load normals from Omnidata .npy or compute from depth as fallback."""
-        if self.has_omnidata_normals and os.path.exists(normal_path):
+        """Load normals from pre-generated .npy or compute from depth as fallback."""
+        if self.has_pregenerated_normals and os.path.exists(normal_path):
             normals = np.load(normal_path).astype(np.float32)
             if normals.shape[1] != img_size[0] or normals.shape[2] != img_size[1]:
                 normals_t = torch.from_numpy(normals).unsqueeze(0)
@@ -232,7 +252,7 @@ class CityscapesMultiTask(Dataset):
                 normals = normals_t.squeeze(0).numpy()
             return normals
         else:
-            # Fallback: compute from depth
+            # Fallback: compute from depth via finite differences
             dz_dx = np.zeros_like(depth)
             dz_dy = np.zeros_like(depth)
             dz_dx[:, 1:-1] = (depth[:, 2:] - depth[:, :-2]) / 2.0
@@ -272,7 +292,7 @@ class CityscapesMultiTask(Dataset):
             bool
         )
 
-        # Resize normals (3, H, W) -> need to handle channel-first
+        # Resize normals (3, H, W) -> handle channel-first
         normals_hwc = np.transpose(normals, (1, 2, 0))  # (H, W, 3)
         normals_pil_r = Image.fromarray(normals_hwc[:, :, 0]).resize(
             (new_w, new_h), Image.BILINEAR
@@ -295,7 +315,6 @@ class CityscapesMultiTask(Dataset):
         cur_h, cur_w = new_h, new_w
 
         if cur_h < H or cur_w < W:
-            # Pad if too small
             pad_h = max(H - cur_h, 0)
             pad_w = max(W - cur_w, 0)
 
@@ -340,13 +359,18 @@ class CityscapesMultiTask(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.images[idx]
-        seg_path, disp_path, normal_path = self._get_paths(img_path)
+        seg_path, disp_path, normal_path, city, frame_name = self._get_paths(img_path)
 
-        # Load image at ORIGINAL resolution first (for better scale augmentation)
+        # Load image
         image = Image.open(img_path).convert("RGB")
         orig_w, orig_h = image.size
 
-        # Load segmentation at original resolution
+        # Load per-frame camera intrinsics
+        baseline, fx, fy, cx, cy = load_camera_intrinsics(
+            self.root, self.split, city, frame_name
+        )
+
+        # Load segmentation
         seg = np.array(Image.open(seg_path), dtype=np.int64)
 
         # Map to train IDs
@@ -355,11 +379,13 @@ class CityscapesMultiTask(Dataset):
             if orig_id >= 0:
                 seg_mapped[seg == orig_id] = train_id
 
-        # Load depth
+        # Load disparity and convert to depth
+        # Official: read as uint16, d = (p - 1) / 256, depth = baseline * fx / d
         if os.path.exists(disp_path):
-            disp_img = Image.open(disp_path)
-            disp = np.array(disp_img, dtype=np.float32) / 256.0
-            depth, valid_depth = disparity_to_depth(disp)
+            # Must read as uint16 — Cityscapes disparity is 16-bit PNG
+
+            raw_disp = cv2.imread(disp_path, cv2.IMREAD_UNCHANGED).astype(np.float32)
+            depth, valid_depth = disparity_to_depth(raw_disp, baseline, fx)
         else:
             depth = np.zeros((orig_h, orig_w), dtype=np.float32)
             valid_depth = np.zeros((orig_h, orig_w), dtype=bool)
@@ -367,7 +393,7 @@ class CityscapesMultiTask(Dataset):
         max_depth = 80.0
         depth = np.clip(depth / max_depth, 0, 1).astype(np.float32)
 
-        # Resize everything to target size first
+        # Resize everything to target size
         image = image.resize((self.img_size[1], self.img_size[0]), Image.BILINEAR)
         seg_mapped = np.array(
             Image.fromarray(seg_mapped.astype(np.int32)).resize(
@@ -390,7 +416,7 @@ class CityscapesMultiTask(Dataset):
 
         # Augmentation
         if self.augment:
-            # 1. Random scale + crop (most important for seg)
+            # 1. Random scale + crop
             image, seg_mapped, depth, normals, valid_depth = self._random_scale_crop(
                 image, seg_mapped, depth, normals, valid_depth
             )
@@ -401,18 +427,18 @@ class CityscapesMultiTask(Dataset):
                 seg_mapped = np.fliplr(seg_mapped).copy()
                 depth = np.fliplr(depth).copy()
                 normals = np.fliplr(normals).copy()
-                normals[0] = -normals[0]
+                normals[0] = -normals[0]  # flip x-component
                 valid_depth = np.fliplr(valid_depth).copy()
 
             # 3. Color jitter
             image = self.color_jitter(image)
 
-            # 4. Random Gaussian blur (helps seg generalization)
+            # 4. Random Gaussian blur
             if random.random() > 0.5:
                 sigma = random.uniform(0.3, 1.5)
                 image = image.filter(ImageFilter.GaussianBlur(radius=sigma))
         else:
-            # Validation: just apply light Gaussian smoothing
+            # Validation: light Gaussian smoothing
             if self.gaussian_sigma > 0:
                 image = image.filter(
                     ImageFilter.GaussianBlur(radius=self.gaussian_sigma)
@@ -464,18 +490,10 @@ def get_dataloaders(data_root, batch_size=2, num_workers=4, img_size=(256, 512))
     return train_loader, val_loader
 
 
-def get_class_weights(mode="strong"):
-    """Return class weights for weighted cross-entropy."""
-    if mode == "strong":
-        return CITYSCAPES_CLASS_WEIGHTS_STRONG
-    else:
-        return CITYSCAPES_CLASS_WEIGHTS
-
-
 __all__ = [
     "CityscapesMultiTask",
     "get_dataloaders",
-    "get_class_weights",
     "CATEGORY_GROUPS",
-    "CITYSCAPES_CLASS_WEIGHTS_STRONG",
+    "load_camera_intrinsics",
+    "disparity_to_depth",
 ]

@@ -61,6 +61,7 @@ logs/
 outputs/
 results/
 predictions/
+visualizations
 submissions/
 
 .DS_Store
@@ -78,3 +79,4 @@ Thumbs.db
 *.rar
 
 cityscapes/
+DSINE/

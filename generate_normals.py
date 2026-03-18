@@ -1,40 +1,68 @@
 """
-Generate Pseudo-GT Surface Normals using Omnidata v2
+Generate Surface Normals from Cityscapes Disparity Maps
 
-Fixed version: handles Cityscapes 2:1 aspect ratio properly by processing
-left and right halves separately through the 384x384 model, then stitching.
+Uses DSINE's depth-to-normal pipeline (cross-product method) following
+the approach in DSINE/notes/depth_to_normal.ipynb (Option 1).
 
-Setup:
-    pip install timm
+Pipeline:
+    1. Read 16-bit disparity PNG
+    2. Convert: d = (p - 1) / 256 (official Cityscapes formula)
+    3. Compute depth: depth = baseline * fx / d
+    4. Build intrinsics matrix, compute inverse
+    5. Unproject depth to 3D camera coordinates
+    6. Compute surface normals via cross-product (DSINE d2n_tblr)
+    7. Save as .npy [3, H, W] float32
+
+Requirements:
+    git clone https://github.com/baegwangbin/DSINE.git
+    (no weights or extra dependencies needed — only math utilities)
 
 Usage:
-    python generate_normals.py --data_root /path/to/cityscapes
-    python generate_normals.py --data_root /path/to/cityscapes --target_h 512 --target_w 1024
-
-Output:
-    cityscapes/normals_omnidata/{train,val}/city/filename_normal.npy
+    python generate_normals.py --data_root /path/to/cityscapes --dsine_path /path/to/DSINE
+    python generate_normals.py --data_root /path/to/cityscapes --dsine_path /path/to/DSINE --target_h 512 --target_w 1024
 """
 
 import os
+import sys
 import argparse
 import glob
+import json
+import importlib.util
 
+import cv2
 import numpy as np
-from PIL import Image
 from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
-from torchvision import transforms
+
+
+def load_module(name, filepath):
+    """Load a Python module directly from file path, bypassing sys.path."""
+    spec = importlib.util.spec_from_file_location(name, filepath)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate pseudo-GT normals with Omnidata"
+        description="Generate normals from Cityscapes disparity"
     )
-    parser.add_argument("--data_root", type=str, required=True)
-    parser.add_argument("--target_h", type=int, default=256)
-    parser.add_argument("--target_w", type=int, default=512)
+    parser.add_argument(
+        "--data_root", type=str, required=True, help="Path to Cityscapes root"
+    )
+    parser.add_argument(
+        "--dsine_path", type=str, required=True, help="Path to cloned DSINE repository"
+    )
+    parser.add_argument("--target_h", type=int, default=512)
+    parser.add_argument("--target_w", type=int, default=1024)
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=5,
+        help="Neighborhood size for cross-product (default: 5)",
+    )
     parser.add_argument(
         "--force",
         action="store_true",
@@ -44,156 +72,209 @@ def parse_args():
     return parser.parse_args()
 
 
-def predict_normals_tiled(model, image, device, tile_size=384, overlap=64):
+def load_camera_intrinsics(data_root, split, city, frame_name):
     """
-    Predict normals by splitting the image into overlapping square tiles,
-    running each through the model, and blending the results.
-
-    This handles Cityscapes 2:1 aspect ratio without distortion.
-
-    Args:
-        model: Omnidata DPT model (expects 384x384 input)
-        image: PIL Image (any size/aspect ratio)
-        device: torch device
-        tile_size: model input size (384 for Omnidata)
-        overlap: pixel overlap between tiles for smooth blending
-
-    Returns:
-        normals: [3, H, W] numpy array of L2-normalized surface normals
+    Load per-frame camera intrinsics from Cityscapes camera JSON.
+    Falls back to default values if JSON not available.
     """
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
+    camera_path = os.path.join(
+        data_root, "camera", split, city, frame_name + "_camera.json"
     )
 
-    orig_w, orig_h = image.size
+    if os.path.exists(camera_path):
+        with open(camera_path, "r") as f:
+            calib = json.load(f)
 
-    # Resize so the shorter side = tile_size, preserving aspect ratio
-    scale = tile_size / min(orig_h, orig_w)
-    new_h = int(orig_h * scale)
-    new_w = int(orig_w * scale)
-    # Make sure dimensions are at least tile_size
-    new_h = max(new_h, tile_size)
-    new_w = max(new_w, tile_size)
+        intrinsic = calib.get("intrinsic", {})
+        extrinsic = calib.get("extrinsic", {})
 
-    image_resized = image.resize((new_w, new_h), Image.BILINEAR)
-    img_tensor = transforms.ToTensor()(image_resized)  # [3, new_h, new_w]
+        fx = intrinsic.get("fx", 2262.52)
+        fy = intrinsic.get("fy", 2262.52)
+        cx = intrinsic.get("u0", 1024.0)
+        cy = intrinsic.get("v0", 512.0)
+        baseline = extrinsic.get("baseline", 0.209313)
 
-    # Accumulator for normals and weight map (for blending overlaps)
-    normal_acc = torch.zeros(3, new_h, new_w)
-    weight_acc = torch.zeros(1, new_h, new_w)
+        return baseline, fx, fy, cx, cy
+    else:
+        return 0.209313, 2262.52, 2262.52, 1024.0, 512.0
 
-    # Generate tile positions
-    stride = tile_size - overlap
 
-    y_positions = list(range(0, new_h - tile_size + 1, stride))
-    if not y_positions or y_positions[-1] + tile_size < new_h:
-        y_positions.append(new_h - tile_size)
+def build_intrinsics_matrix(fx, fy, cx, cy):
+    """Build 3x3 camera intrinsics matrix."""
+    return np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]], dtype=np.float32)
 
-    x_positions = list(range(0, new_w - tile_size + 1, stride))
-    if not x_positions or x_positions[-1] + tile_size < new_w:
-        x_positions.append(new_w - tile_size)
 
-    # Remove duplicates and sort
-    y_positions = sorted(set(y_positions))
-    x_positions = sorted(set(x_positions))
-
-    # Create blending weight (raised cosine window for smooth transitions)
-    blend_1d = torch.ones(tile_size)
-    if overlap > 0:
-        ramp = torch.linspace(0, 1, overlap)
-        blend_1d[:overlap] = ramp
-        blend_1d[-overlap:] = ramp.flip(0)
-    blend_weight = blend_1d.unsqueeze(1) * blend_1d.unsqueeze(0)  # [tile, tile]
-    blend_weight = blend_weight.unsqueeze(0)  # [1, tile, tile]
-
-    # Process each tile
-    for y in y_positions:
-        for x in x_positions:
-            tile = img_tensor[:, y : y + tile_size, x : x + tile_size]  # [3, 384, 384]
-            tile_norm = normalize(tile).unsqueeze(0).to(device)  # [1, 3, 384, 384]
-
-            with torch.no_grad():
-                pred = model(tile_norm)  # [1, 3, 384, 384]
-                pred = F.normalize(pred, p=2, dim=1)
-
-            pred_cpu = pred.squeeze(0).cpu()  # [3, 384, 384]
-
-            normal_acc[:, y : y + tile_size, x : x + tile_size] += (
-                pred_cpu * blend_weight
-            )
-            weight_acc[:, y : y + tile_size, x : x + tile_size] += blend_weight
-
-    # Normalize by weight
-    weight_acc = torch.clamp(weight_acc, min=1e-6)
-    normals = normal_acc / weight_acc  # [3, new_h, new_w]
-
-    # L2 normalize the final result
-    normals = F.normalize(normals.unsqueeze(0), p=2, dim=1).squeeze(0)
-
-    return normals.numpy().astype(np.float32)
+def scale_intrinsics(intrins, orig_h, orig_w, new_h, new_w):
+    """Scale intrinsics when image is resized."""
+    sx = new_w / orig_w
+    sy = new_h / orig_h
+    scaled = intrins.copy()
+    scaled[0, 0] *= sx  # fx
+    scaled[0, 2] *= sx  # cx
+    scaled[1, 1] *= sy  # fy
+    scaled[1, 2] *= sy  # cy
+    return scaled
 
 
 def main():
     args = parse_args()
     target_size = (args.target_h, args.target_w)
 
+    # Load DSINE utilities directly by file path (avoids utils/ naming conflict)
+    try:
+        projection = load_module(
+            "dsine_projection",
+            os.path.join(args.dsine_path, "utils", "projection.py"),
+        )
+        cross_module = load_module(
+            "dsine_cross",
+            os.path.join(args.dsine_path, "utils", "d2n", "cross.py"),
+        )
+
+        intrins_to_intrins_inv = projection.intrins_to_intrins_inv
+        get_cam_coords = projection.get_cam_coords
+        d2n_tblr = cross_module.d2n_tblr
+
+        print("DSINE utilities loaded successfully!")
+    except Exception as e:
+        print(f"ERROR: Cannot load DSINE utilities from {args.dsine_path}")
+        print(f"  {e}")
+        print(f"")
+        print(
+            f"  Make sure you cloned: git clone https://github.com/baegwangbin/DSINE.git"
+        )
+        print(f"  Expected files:")
+        print(f"    {os.path.join(args.dsine_path, 'utils', 'projection.py')}")
+        print(f"    {os.path.join(args.dsine_path, 'utils', 'd2n', 'cross.py')}")
+        sys.exit(1)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-
-    # Load Omnidata normal model
-    print("Loading Omnidata surface normal model...")
-    model = torch.hub.load("alexsax/omnidata_models", "surface_normal_dpt_hybrid_384")
-    model = model.to(device)
-    model.eval()
-    print("Model loaded!")
+    print(f"Target resolution: {args.target_h}x{args.target_w}")
+    print(f"Cross-product neighborhood k={args.k}")
 
     for split in ["train", "val"]:
         img_dir = os.path.join(args.data_root, "leftImg8bit", split)
-        out_dir = os.path.join(args.data_root, "normals_omnidata", split)
+        disp_dir = os.path.join(args.data_root, "disparity", split)
+        out_dir = os.path.join(args.data_root, "normals", split)
 
         images = sorted(glob.glob(os.path.join(img_dir, "*", "*.png")))
         print(f"\nProcessing {len(images)} images for {split}...")
 
         skipped = 0
+        errors = 0
+
         for img_path in tqdm(images, desc=split):
             parts = img_path.split(os.sep)
             city = parts[-2]
-            fname = parts[-1].replace("_leftImg8bit.png", "_normal.npy")
+            fname = parts[-1]
+            frame_name = fname.replace("_leftImg8bit.png", "")
 
             city_out_dir = os.path.join(out_dir, city)
             os.makedirs(city_out_dir, exist_ok=True)
-            out_path = os.path.join(city_out_dir, fname)
+            out_path = os.path.join(city_out_dir, frame_name + "_normal.npy")
 
-            # Skip if already exists (unless --force)
             if os.path.exists(out_path) and not args.force:
                 skipped += 1
                 continue
 
-            # Load image
-            image = Image.open(img_path).convert("RGB")
+            try:
+                # --- Step 1: Load disparity (16-bit PNG) ---
+                disp_path = os.path.join(disp_dir, city, frame_name + "_disparity.png")
 
-            # Predict normals with tiling (handles any aspect ratio)
-            normals = predict_normals_tiled(
-                model, image, device, tile_size=384, overlap=64
-            )
+                if not os.path.exists(disp_path):
+                    errors += 1
+                    continue
 
-            # Resize to target resolution
-            normals_tensor = torch.from_numpy(normals).unsqueeze(0)
-            normals_tensor = F.interpolate(
-                normals_tensor, size=target_size, mode="bilinear", align_corners=False
-            )
-            normals_tensor = F.normalize(normals_tensor, p=2, dim=1)
+                raw_disp = cv2.imread(disp_path, cv2.IMREAD_UNCHANGED).astype(
+                    np.float32
+                )
+                orig_h, orig_w = raw_disp.shape
 
-            normal_np = normals_tensor.squeeze(0).numpy().astype(np.float32)
-            np.save(out_path, normal_np)
+                # --- Step 2: Convert disparity (official formula) ---
+                # d = (p - 1) / 256 for p > 0, p = 0 is invalid
+                valid_mask = raw_disp > 0
+                disp = np.zeros_like(raw_disp)
+                disp[valid_mask] = (raw_disp[valid_mask] - 1.0) / 256.0
 
-        if skipped > 0:
-            print(f"  Skipped {skipped} existing files (use --force to regenerate)")
+                # --- Step 3: Compute depth ---
+                baseline, fx, fy, cx, cy = load_camera_intrinsics(
+                    args.data_root, split, city, frame_name
+                )
 
-    print(
-        f"\nDone! Normals saved to: {os.path.join(args.data_root, 'normals_omnidata')}"
-    )
+                depth = np.zeros_like(disp)
+                valid_disp = valid_mask & (disp > 0)
+                depth[valid_disp] = (baseline * fx) / disp[valid_disp]
+
+                # Clamp to reasonable range
+                depth = np.clip(depth, 0, 300.0)
+
+                # Set invalid pixels to 0
+                depth[~valid_disp] = 0.0
+
+                # --- Step 4: Resize depth to target resolution ---
+                depth_resized = cv2.resize(
+                    depth,
+                    (target_size[1], target_size[0]),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                valid_resized = cv2.resize(
+                    valid_disp.astype(np.uint8),
+                    (target_size[1], target_size[0]),
+                    interpolation=cv2.INTER_NEAREST,
+                ).astype(bool)
+
+                # Zero out invalid after resize
+                depth_resized[~valid_resized] = 0.0
+
+                # --- Step 5: Build intrinsics and scale ---
+                intrins = build_intrinsics_matrix(fx, fy, cx, cy)
+                intrins_scaled = scale_intrinsics(
+                    intrins, orig_h, orig_w, target_size[0], target_size[1]
+                )
+
+                # Compute inverse intrinsics (DSINE utility)
+                intrins_inv = intrins_to_intrins_inv(intrins_scaled)
+
+                # --- Step 6: Convert to tensors ---
+                # depth: (1, 1, H, W)
+                depth_t = torch.from_numpy(depth_resized).float()
+                depth_t = depth_t.unsqueeze(0).unsqueeze(0).to(device)
+
+                # intrins_inv: (1, 3, 3)
+                intrins_inv_t = torch.from_numpy(intrins_inv).float()
+                intrins_inv_t = intrins_inv_t.unsqueeze(0).to(device)
+
+                # --- Step 7: Unproject to 3D camera coordinates ---
+                points = get_cam_coords(intrins_inv_t, depth_t)
+
+                # --- Step 8: Compute normals via cross-product ---
+                # Option 1 from DSINE notebook — fast and effective
+                with torch.no_grad():
+                    normal, normal_valid = d2n_tblr(
+                        points, k=args.k, d_min=1e-3, d_max=1000.0
+                    )
+
+                # --- Step 9: Save ---
+                # normal: (1, 3, H, W), values in [-1, 1]
+                normal = normal * normal_valid.float()
+                normal_np = normal.squeeze(0).cpu().numpy().astype(np.float32)
+
+                np.save(out_path, normal_np)
+
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    print(f"\n  Error on {frame_name}: {e}")
+                elif errors == 6:
+                    print(f"\n  Suppressing further error messages...")
+
+        print(
+            f"  Completed: {len(images) - skipped - errors} generated, "
+            f"{skipped} skipped, {errors} errors"
+        )
+
+    print(f"\nDone! Normals saved to: {os.path.join(args.data_root, 'normals')}")
     print(f"\nRetrain with:")
     print(
         f"  python train.py --data_root {args.data_root} --epochs 80 --batch_size 2 "
