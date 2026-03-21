@@ -34,12 +34,9 @@ Datasets/
 *.feather
 *.pkl
 
-checkpoints/
 weights/
 Model_Weights/
 models/
-*.pt
-*.pth
 *.ckpt
 *.onnx
 *.pb
@@ -79,5 +76,8 @@ Thumbs.db
 
 cityscapes/
 DSINE/
-Architecture_Diagram/
+Paper_LateX/
 visualizations/
+ablation_depth_only/
+ablation_normal_only/
+ablation_seg_only/
