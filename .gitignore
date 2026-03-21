@@ -57,11 +57,10 @@ events.out.tfevents.*
 
 logs/
 *.log
-
+*_log.txt
 outputs/
 results/
 predictions/
-visualizations
 submissions/
 
 .DS_Store
@@ -80,3 +79,5 @@ Thumbs.db
 
 cityscapes/
 DSINE/
+Architecture_Diagram/
+visualizations/

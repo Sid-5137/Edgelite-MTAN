@@ -130,10 +130,12 @@ def visualize_predictions(image, predictions, targets=None, save_path=None):
 def plot_radar_chart(per_category_mae, per_category_wae, save_path=None):
     """
     Generate radar charts for per-category SNE metrics.
+    Bigger area = lower error = better performance.
+    Axis labels show actual error values (not inverted).
 
     Args:
-        per_category_mae: dict {category: mae_degrees} for EdgeLite-MTAN
-        per_category_wae: dict {category: wae_degrees} for EdgeLite-MTAN
+        per_category_mae: dict {category: mae_degrees}
+        per_category_wae: dict {category: wae_degrees}
         save_path: path to save figure
     """
     categories = list(per_category_mae.keys())
@@ -149,49 +151,57 @@ def plot_radar_chart(per_category_mae, per_category_wae, save_path=None):
     mae_vals = [per_category_mae[c] for c in categories]
     wae_vals = [per_category_wae.get(c, mae_vals[i]) for i, c in enumerate(categories)]
 
-    # For radar: outer = better, so invert (max - value)
-    max_val = max(max(mae_vals), max(wae_vals)) + 5
+    # Fixed max so axis is consistent across both charts
+    max_val = 90.0
 
+    # Invert: bigger area = lower error = better
     mae_radar = [max_val - v for v in mae_vals] + [max_val - mae_vals[0]]
     wae_radar = [max_val - v for v in wae_vals] + [max_val - wae_vals[0]]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6.5), subplot_kw=dict(polar=True))
+    fig, axes_arr = plt.subplots(1, 2, figsize=(14, 6.5), subplot_kw=dict(polar=True))
 
-    # (a) MAE
-    ax = axes[0]
-    ax.plot(angles, mae_radar, color="#43A047", linewidth=2.5, marker="D", markersize=5)
-    ax.fill(angles, mae_radar, color="#43A047", alpha=0.2)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(
-        [c.capitalize() for c in categories], fontsize=10, fontweight="bold"
-    )
-    ax.set_title(
-        "(a) Mean Angular Error\n(uniform pixel weighting)",
-        fontsize=12,
-        fontweight="bold",
-        pad=25,
-    )
+    chart_data = [
+        (axes_arr[0], mae_radar, mae_vals,
+         "(a) Mean Angular Error\n(uniform pixel weighting)"),
+        (axes_arr[1], wae_radar, wae_vals,
+         "(b) Depth-Weighted Angular Error\n(near-field emphasis)"),
+    ]
 
-    # (b) WAE
-    ax = axes[1]
-    ax.plot(angles, wae_radar, color="#43A047", linewidth=2.5, marker="D", markersize=5)
-    ax.fill(angles, wae_radar, color="#43A047", alpha=0.2)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(
-        [c.capitalize() for c in categories], fontsize=10, fontweight="bold"
-    )
-    ax.set_title(
-        "(b) Depth-Weighted Angular Error\n(near-field emphasis)",
-        fontsize=12,
-        fontweight="bold",
-        pad=25,
-    )
+    for ax, radar_vals, actual_vals, title in chart_data:
+        ax.plot(angles, radar_vals, color="#43A047", linewidth=2.5,
+                marker="D", markersize=5)
+        ax.fill(angles, radar_vals, color="#43A047", alpha=0.2)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(
+            [c.capitalize() for c in categories],
+            fontsize=10, fontweight="bold"
+        )
+
+        # Axis ticks showing actual error values
+        tick_errors = [10, 20, 30, 40, 50, 60, 70]
+        tick_positions = [max_val - e for e in tick_errors]
+        ax.set_yticks(tick_positions)
+        ax.set_yticklabels([f"{e}\u00b0" for e in tick_errors],
+                           fontsize=7, color="gray")
+        ax.set_ylim(0, max_val)
+
+        # Value annotations next to each point
+        for i, (angle, val) in enumerate(zip(angles[:-1], actual_vals)):
+            ax.annotate(f"{val:.1f}\u00b0",
+                        xy=(angle, max_val - val),
+                        xytext=(5, 5), textcoords="offset points",
+                        fontsize=8, color="#2E7D32", fontweight="bold")
+
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=25)
+
+        # Clarification note
+        ax.text(0.5, -0.12, "Larger area = lower error = better",
+                transform=ax.transAxes, ha="center", fontsize=8,
+                style="italic", color="gray")
 
     plt.suptitle(
         "Surface Normal Estimation: Category-Level Performance",
-        fontsize=14,
-        fontweight="bold",
-        y=1.02,
+        fontsize=14, fontweight="bold", y=1.02,
     )
     plt.tight_layout()
 
