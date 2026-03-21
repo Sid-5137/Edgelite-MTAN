@@ -1,6 +1,2 @@
-checkpoints/ filter=lfs diff=lfs merge=lfs -text
-checkpoints/ablation_depth_only filter=lfs diff=lfs merge=lfs -text
-checkpoints/ablation_normal_only filter=lfs diff=lfs merge=lfs -text
-checkpoints/ablation_seg_only filter=lfs diff=lfs merge=lfs -text
 checkpoints/best.pth filter=lfs diff=lfs merge=lfs -text
 checkpoints/latest.pth filter=lfs diff=lfs merge=lfs -text
