@@ -212,7 +212,7 @@ class CosineSimilarityNormalLoss(nn.Module):
         return loss
 
 
-# Cityscapes inverse-frequency alpha weights for focal loss
+# Cityscapes inverse-frequency alpha weights for focal loss (19 classes)
 CITYSCAPES_FOCAL_ALPHA = torch.FloatTensor(
     [
         0.3,  # road (very common)
@@ -236,6 +236,31 @@ CITYSCAPES_FOCAL_ALPHA = torch.FloatTensor(
         2.0,  # bicycle
     ]
 )
+
+# NYUv2 inverse-frequency alpha weights for focal loss (13 classes)
+NYUV2_FOCAL_ALPHA = torch.FloatTensor(
+    [
+        1.5,  # bed
+        2.0,  # books (small)
+        0.5,  # ceiling (common)
+        1.0,  # chair
+        0.4,  # floor (very common)
+        1.0,  # furniture
+        1.5,  # objects
+        2.0,  # painting (small)
+        1.2,  # sofa
+        1.0,  # table
+        2.5,  # tv (small)
+        0.3,  # wall (very common)
+        1.5,  # window
+    ]
+)
+
+# Registry for dataset-specific alpha weights
+FOCAL_ALPHA_REGISTRY = {
+    19: CITYSCAPES_FOCAL_ALPHA,
+    13: NYUV2_FOCAL_ALPHA,
+}
 
 
 class MultiTaskLoss(nn.Module):
@@ -264,9 +289,13 @@ class MultiTaskLoss(nn.Module):
 
         # Segmentation loss
         if use_focal:
-            alpha = (
-                class_weights if class_weights is not None else CITYSCAPES_FOCAL_ALPHA
-            )
+            if class_weights is not None:
+                alpha = class_weights
+            elif num_classes in FOCAL_ALPHA_REGISTRY:
+                alpha = FOCAL_ALPHA_REGISTRY[num_classes]
+            else:
+                # Uniform weights for unknown class counts
+                alpha = torch.ones(num_classes)
             self.seg_loss = DiceFocalLoss(
                 num_classes=num_classes,
                 gamma=focal_gamma,
@@ -352,4 +381,6 @@ __all__ = [
     "DiceLoss",
     "DiceFocalLoss",
     "CITYSCAPES_FOCAL_ALPHA",
+    "NYUV2_FOCAL_ALPHA",
+    "FOCAL_ALPHA_REGISTRY",
 ]

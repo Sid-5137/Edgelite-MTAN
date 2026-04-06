@@ -196,7 +196,8 @@ class MetricAccumulator:
     not averaged from per-batch mIoU values.
     """
 
-    def __init__(self):
+    def __init__(self, num_classes=19):
+        self.num_classes = num_classes
         self.reset()
 
     def reset(self):
@@ -206,8 +207,8 @@ class MetricAccumulator:
         self.per_category_wae = {}
 
         # Global accumulation for segmentation
-        self.seg_intersection = np.zeros(19)
-        self.seg_union = np.zeros(19)
+        self.seg_intersection = np.zeros(self.num_classes)
+        self.seg_union = np.zeros(self.num_classes)
 
     def update(self, d_metrics, s_metrics, n_metrics):
         """Add batch metrics."""
@@ -245,7 +246,7 @@ class MetricAccumulator:
 
         # Compute global mIoU from accumulated intersection/union
         iou_per_class = []
-        for c in range(19):
+        for c in range(self.num_classes):
             if self.seg_union[c] > 0:
                 iou_per_class.append(self.seg_intersection[c] / self.seg_union[c])
         results["seg/miou"] = np.mean(iou_per_class) if iou_per_class else 0.0

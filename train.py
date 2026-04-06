@@ -1,22 +1,17 @@
 """
-Training Script for EdgeLite-MTAN
+Training Script for MTAN-Lite
 
 Usage:
-    # Best config for high mIoU
-    python train.py --data_root cityscapes/ --epochs 80 --batch_size 4 --img_h 512 --img_w 1024 --w_seg 4.0 --focal_gamma 2.0
+    # Cityscapes (default)
+    python train.py --dataset cityscapes --data_root cityscapes/ --img_h 512 --img_w 1024
 
-    # Lower memory alternative
-    python train.py --data_root cityscapes/ --epochs 80 --batch_size 8 --w_seg 4.0 --focal_gamma 2.0
-
-    # Disable focal loss (use plain CE)
-    python train.py --data_root cityscapes/ --no_focal --epochs 80 --batch_size 8
+    # NYUv2
+    python train.py --dataset nyuv2 --data_root nyuv2/
 
     # Ablations
-    python train.py --data_root cityscapes/ --no_attention --save_dir checkpoints/no_attn --log_dir logs/no_attn
-    python train.py --data_root cityscapes/ --no_skips --save_dir checkpoints/no_skips --log_dir logs/no_skips
-    python train.py --data_root cityscapes/ --w_depth 1.0 --w_seg 0.0 --w_normal 0.0 --save_dir checkpoints/depth_only --log_dir logs/depth_only
-    python train.py --data_root cityscapes/ --w_depth 0.0 --w_seg 1.0 --w_normal 0.0 --save_dir checkpoints/seg_only --log_dir logs/seg_only
-    python train.py --data_root cityscapes/ --w_depth 0.0 --w_seg 0.0 --w_normal 1.0 --save_dir checkpoints/normal_only --log_dir logs/normal_only
+    python train.py --dataset cityscapes --data_root cityscapes/ --w_depth 1.0 --w_seg 0.0 --w_normal 0.0 --save_dir checkpoints/depth_only
+    python train.py --dataset cityscapes --data_root cityscapes/ --w_depth 0.0 --w_seg 1.0 --w_normal 0.0 --save_dir checkpoints/seg_only
+    python train.py --dataset cityscapes --data_root cityscapes/ --w_depth 0.0 --w_seg 0.0 --w_normal 1.0 --save_dir checkpoints/normal_only
 """
 
 import os
@@ -31,7 +26,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
 
 from model import EdgeLiteMTAN
-from data.cityscapes import get_dataloaders, CATEGORY_GROUPS
 from losses.multi_task_loss import MultiTaskLoss
 from utils.metrics import (
     depth_metrics,
@@ -42,6 +36,42 @@ from utils.metrics import (
 from utils.visualization import visualize_predictions
 
 
+# Dataset-specific defaults
+DATASET_DEFAULTS = {
+    "cityscapes": {
+        "num_classes": 19,
+        "img_h": 256,
+        "img_w": 512,
+        "epochs": 80,
+        "batch_size": 8,
+        "w_seg": 4.0,
+        "w_normal": 1.0,
+        "max_depth": 80.0,
+    },
+    "nyuv2": {
+        "num_classes": 13,
+        "img_h": 288,
+        "img_w": 384,
+        "epochs": 200,
+        "batch_size": 4,
+        "w_seg": 1.0,
+        "w_normal": 1.0,
+        "max_depth": 10.0,
+    },
+}
+
+
+def load_dataset(name):
+    """Dynamically import dataset module and return (get_dataloaders, CATEGORY_GROUPS)."""
+    if name == "cityscapes":
+        from data.cityscapes import get_dataloaders, CATEGORY_GROUPS
+    elif name == "nyuv2":
+        from data.nyuv2 import get_dataloaders, CATEGORY_GROUPS
+    else:
+        raise ValueError(f"Unknown dataset: {name}. Choose from: {list(DATASET_DEFAULTS.keys())}")
+    return get_dataloaders, CATEGORY_GROUPS
+
+
 def to_python_float(val):
     if hasattr(val, "item"):
         return val.item()
@@ -49,20 +79,23 @@ def to_python_float(val):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train EdgeLite-MTAN")
+    parser = argparse.ArgumentParser(description="Train MTAN-Lite")
+    parser.add_argument("--dataset", type=str, default="cityscapes",
+                       choices=["cityscapes", "nyuv2"],
+                       help="Dataset to train on")
     parser.add_argument("--data_root", type=str, required=True)
-    parser.add_argument("--epochs", type=int, default=80)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--grad_accum", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--warmup_epochs", type=int, default=5)
-    parser.add_argument("--num_classes", type=int, default=19)
-    parser.add_argument("--img_h", type=int, default=256)
-    parser.add_argument("--img_w", type=int, default=512)
+    parser.add_argument("--num_classes", type=int, default=None)
+    parser.add_argument("--img_h", type=int, default=None)
+    parser.add_argument("--img_w", type=int, default=None)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--save_dir", type=str, default="checkpoints")
-    parser.add_argument("--log_dir", type=str, default="logs")
-    parser.add_argument("--vis_dir", type=str, default="visualizations")
+    parser.add_argument("--save_dir", type=str, default=None)
+    parser.add_argument("--log_dir", type=str, default=None)
+    parser.add_argument("--vis_dir", type=str, default=None)
     parser.add_argument("--vis_every", type=int, default=5)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--pretrained", action="store_true", default=True)
@@ -72,8 +105,8 @@ def parse_args():
         "--loss_mode", type=str, default="fixed", choices=["fixed", "uncertainty"]
     )
     parser.add_argument("--w_depth", type=float, default=1.0)
-    parser.add_argument("--w_seg", type=float, default=4.0)
-    parser.add_argument("--w_normal", type=float, default=1.0)
+    parser.add_argument("--w_seg", type=float, default=None)
+    parser.add_argument("--w_normal", type=float, default=None)
     parser.add_argument(
         "--focal_gamma", type=float, default=2.0, help="Focal loss gamma (0 = plain CE)"
     )
@@ -89,6 +122,34 @@ def parse_args():
     parser.add_argument("--no_skips", action="store_true", default=False)
 
     return parser.parse_args()
+
+
+def apply_dataset_defaults(args):
+    """Fill None args with dataset-specific defaults."""
+    defaults = DATASET_DEFAULTS[args.dataset]
+    if args.num_classes is None:
+        args.num_classes = defaults["num_classes"]
+    if args.img_h is None:
+        args.img_h = defaults["img_h"]
+    if args.img_w is None:
+        args.img_w = defaults["img_w"]
+    if args.epochs is None:
+        args.epochs = defaults["epochs"]
+    if args.batch_size is None:
+        args.batch_size = defaults["batch_size"]
+    if args.w_seg is None:
+        args.w_seg = defaults["w_seg"]
+    if args.w_normal is None:
+        args.w_normal = defaults["w_normal"]
+    if args.save_dir is None:
+        args.save_dir = f"checkpoints/{args.dataset}"
+    if args.log_dir is None:
+        args.log_dir = f"logs/{args.dataset}"
+    if args.vis_dir is None:
+        args.vis_dir = f"visualizations/{args.dataset}"
+    if not hasattr(args, 'max_depth') or args.max_depth is None:
+        args.max_depth = defaults["max_depth"]
+    return args
 
 
 def train_one_epoch(
@@ -135,9 +196,10 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device, epoch, vis_dir=None, num_vis=4):
+def validate(model, loader, criterion, device, epoch, vis_dir=None, num_vis=4,
+             num_classes=19, category_groups=None, max_depth=80.0):
     model.eval()
-    accumulator = MetricAccumulator()
+    accumulator = MetricAccumulator(num_classes=num_classes)
     running_losses = {}
     vis_count = 0
 
@@ -155,16 +217,18 @@ def validate(model, loader, criterion, device, epoch, vis_dir=None, num_vis=4):
             running_losses[k].append(v)
 
         d_met = depth_metrics(
-            predictions["depth"], targets_device["depth"], targets_device["valid_depth"]
+            predictions["depth"], targets_device["depth"], targets_device["valid_depth"],
+            max_depth=max_depth
         )
-        s_met = segmentation_metrics(predictions["seg"], targets_device["seg"])
+        s_met = segmentation_metrics(predictions["seg"], targets_device["seg"],
+                                     num_classes=num_classes)
         n_met = normal_metrics(
             predictions["normal"],
             targets_device["normal"],
             targets_device["valid_depth"],
             depth=targets_device["depth"],
             seg_labels=targets_device["seg"],
-            category_groups=CATEGORY_GROUPS,
+            category_groups=category_groups,
         )
 
         accumulator.update(d_met, s_met, n_met)
@@ -185,6 +249,10 @@ def validate(model, loader, criterion, device, epoch, vis_dir=None, num_vis=4):
 
 def main():
     args = parse_args()
+    args = apply_dataset_defaults(args)
+
+    # Dynamic dataset import
+    get_dataloaders, CATEGORY_GROUPS = load_dataset(args.dataset)
 
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
@@ -192,12 +260,13 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Dataset: {args.dataset}")
 
     use_attention = not args.no_attention
     use_skips = not args.no_skips
     use_focal = not args.no_focal
 
-    variant_name = "EdgeLite-MTAN"
+    variant_name = "MTAN-Lite"
     if not use_attention:
         variant_name += " (no attention)"
     if not use_skips:
@@ -310,6 +379,9 @@ def main():
             device,
             epoch,
             vis_dir=args.vis_dir if do_vis else None,
+            num_classes=args.num_classes,
+            category_groups=CATEGORY_GROUPS,
+            max_depth=args.max_depth,
         )
 
         scheduler.step()

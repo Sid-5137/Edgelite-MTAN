@@ -1,0 +1,85 @@
+<mxfile host="app.diagrams.net" agent="Claude">
+  <diagram id="edgelite-mtan-arch" name="EdgeLite-MTAN Architecture">
+    <mxGraphModel dx="1872" dy="1055" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="3300" pageHeight="5000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="mod1_bg" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#388E3C;strokeWidth=0;arcSize=0;" value="" vertex="1">
+          <mxGeometry height="310" width="1320" x="100" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="input" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#607D8B;strokeWidth=2;fontSize=11;arcSize=12;" value="&lt;b&gt;Input Image&lt;/b&gt;&lt;br&gt;&lt;font size=&quot;1&quot;&gt;&lt;i&gt;H × W × 3&lt;/i&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="55" width="120" x="140" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_in" edge="1" parent="1" source="input" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#333333;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="enc1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="enc1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#388E3C;strokeWidth=2;fontSize=10;arcSize=10;" value="&lt;b style=&quot;font-size:12px;&quot;&gt;F&lt;sub&gt;4&lt;/sub&gt;&lt;/b&gt;&lt;br&gt;&lt;font size=&quot;1&quot;&gt;H/4 × W/4 × &lt;b&gt;24&lt;/b&gt;&lt;br&gt;(1/4 resolution)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="75" width="170" x="310" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="enc2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#388E3C;strokeWidth=2;fontSize=10;arcSize=10;" value="&lt;b style=&quot;font-size:12px;&quot;&gt;F&lt;sub&gt;8&lt;/sub&gt;&lt;/b&gt;&lt;br&gt;&lt;font size=&quot;1&quot;&gt;H/8 × W/8 × &lt;b&gt;40&lt;/b&gt;&lt;br&gt;(1/8 resolution)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="75" width="170" x="560" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="enc3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#388E3C;strokeWidth=2;fontSize=10;arcSize=10;" value="&lt;b style=&quot;font-size:12px;&quot;&gt;F₁₆&lt;/b&gt;&lt;br&gt;&lt;font size=&quot;1&quot;&gt;H/16 × W/16 × &lt;b&gt;112&lt;/b&gt;&lt;br&gt;(1/16 resolution)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="75" width="170" x="810" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="enc4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;strokeWidth=2.5;fontSize=10;arcSize=10;" value="&lt;b style=&quot;font-size:12px;&quot;&gt;F₃₂&lt;/b&gt;&lt;br&gt;&lt;font size=&quot;1&quot;&gt;H/32 × W/32 × &lt;b&gt;160&lt;/b&gt;&lt;br&gt;(1/32 resolution)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="75" width="170" x="1060" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="enc_seq1" edge="1" parent="1" source="enc1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#43A047;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="enc2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="enc_seq2" edge="1" parent="1" source="enc2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#43A047;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="enc3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="enc_seq3" edge="1" parent="1" source="enc3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#43A047;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="enc4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tap4" parent="1" style="text;html=1;align=center;verticalAlign=middle;strokeColor=none;fillColor=none;fontSize=8;" value="&lt;font color=&quot;#539d56&quot; size=&quot;1&quot;&gt;&lt;b&gt;Primary Output&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="15" width="80" x="1290" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="skip_line_f4" edge="1" parent="1" style="strokeWidth=1.5;strokeColor=#FF9800;dashed=1;dashPattern=8 4;endArrow=none;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="395" y="245" as="sourcePoint" />
+            <mxPoint x="395" y="310" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="skip_line_f8" edge="1" parent="1" style="strokeWidth=1.5;strokeColor=#FF9800;dashed=1;dashPattern=8 4;endArrow=none;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="645" y="245" as="sourcePoint" />
+            <mxPoint x="645" y="310" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="skip_line_f16" edge="1" parent="1" style="strokeWidth=1.5;strokeColor=#FF9800;dashed=1;dashPattern=8 4;endArrow=none;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="895" y="245" as="sourcePoint" />
+            <mxPoint x="895" y="310" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="R5CJQYPtk1csSWA2hM2Z-1" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeWidth=2;strokeColor=#43A047;exitX=1;exitY=0.5;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1230" y="207.31" as="sourcePoint" />
+            <mxPoint x="1290" y="207" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="R5CJQYPtk1csSWA2hM2Z-2" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;Skip (Free tap)&lt;/i&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;To all 3 decoders&lt;/i&gt;&lt;/font&gt;&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="30" width="105" x="342.5" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="R5CJQYPtk1csSWA2hM2Z-3" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;Skip (Free tap)&lt;/i&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;To all 3 decoders&lt;/i&gt;&lt;/font&gt;&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="30" width="105" x="592.5" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="R5CJQYPtk1csSWA2hM2Z-4" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;Skip (Free tap)&lt;/i&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;To all 3 decoders&lt;/i&gt;&lt;/font&gt;&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="30" width="105" x="842.5" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="R5CJQYPtk1csSWA2hM2Z-5" connectable="0" parent="1" style="group" value="" vertex="1">
+          <mxGeometry height="42" width="360" x="560" y="68" as="geometry" />
+        </mxCell>
+        <mxCell id="mod1_title" parent="R5CJQYPtk1csSWA2hM2Z-5" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" value="&lt;font style=&quot;font-size:13px;&quot; color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Module 1: MobileNetV3-Large Shared Encoder&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="25" width="360" as="geometry" />
+        </mxCell>
+        <mxCell id="mod1_sub" parent="R5CJQYPtk1csSWA2hM2Z-5" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=9;" value="&lt;font color=&quot;#558B2F&quot;&gt;&lt;i&gt;Sequential forward pass: features extracted at 4 resolution scales&lt;/i&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="340" x="10" y="22" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
